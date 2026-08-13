@@ -1,7 +1,6 @@
 const fs = require('fs');
 const readline = require('readline');
 const { ethers } = require('ethers');
-const { SiweMessage } = require('siwe');
 
 const DOMAIN = 'blnkinc.xyz';
 const URI = 'https://blnkinc.xyz';
@@ -48,22 +47,25 @@ async function getNonce() {
   return nonce;
 }
 
+function buildSiweMessage({ address, nonce, issuedAt }) {
+  return `${DOMAIN} wants you to sign in with your Ethereum account:
+${address}
+
+${STATEMENT}
+
+URI: ${URI}
+Version: 1
+Chain ID: ${CHAIN_ID}
+Nonce: ${nonce}
+Issued At: ${issuedAt}`;
+}
+
 async function connectWallet(privateKey) {
   const wallet = new ethers.Wallet(privateKey);
   const nonce = await getNonce();
+  const issuedAt = new Date().toISOString();
 
-  const siweMessage = new SiweMessage({
-    domain: DOMAIN,
-    address: wallet.address,
-    statement: STATEMENT,
-    uri: URI,
-    version: '1',
-    chainId: CHAIN_ID,
-    nonce,
-    issuedAt: new Date().toISOString(),
-  });
-
-  const messageToSign = siweMessage.prepareMessage();
+  const messageToSign = buildSiweMessage({ address: wallet.address, nonce, issuedAt });
   const signature = await wallet.signMessage(messageToSign);
 
   const res = await fetch(`https://${DOMAIN}/api/auth/verify`, {
@@ -71,14 +73,14 @@ async function connectWallet(privateKey) {
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
       message: {
-        domain: siweMessage.domain,
-        address: siweMessage.address,
-        statement: siweMessage.statement,
-        uri: siweMessage.uri,
-        version: siweMessage.version,
-        chainId: siweMessage.chainId,
-        nonce: siweMessage.nonce,
-        issuedAt: siweMessage.issuedAt,
+        domain: DOMAIN,
+        address: wallet.address,
+        statement: STATEMENT,
+        uri: URI,
+        version: '1',
+        chainId: CHAIN_ID,
+        nonce,
+        issuedAt,
       },
       signature,
     }),
