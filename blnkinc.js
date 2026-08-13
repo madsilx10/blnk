@@ -40,11 +40,30 @@ function extractCookieValue(setCookieHeader, name) {
   return match ? match[1] : null;
 }
 
+const COMMON_HEADERS = {
+  'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36',
+  Accept: 'application/json, text/plain, */*',
+  'Accept-Language': 'en-US,en;q=0.9',
+};
+
+async function safeJson(res, label) {
+  const text = await res.text();
+  try {
+    return JSON.parse(text);
+  } catch (e) {
+    throw new Error(`${label} - respons bukan JSON (status ${res.status}): ${text.slice(0, 150)}`);
+  }
+}
+
 async function getNonce() {
-  const res = await fetch(`https://${DOMAIN}/api/auth/nonce`);
-  const nonce = (await res.text()).trim();
-  if (!nonce) throw new Error('gagal ambil nonce');
-  return nonce;
+  const res = await fetch(`https://${DOMAIN}/api/auth/nonce`, {
+    headers: { ...COMMON_HEADERS, Referer: `https://${DOMAIN}/dashboard` },
+  });
+  const text = await res.text();
+  if (!text || text.trim().startsWith('<')) {
+    throw new Error(`getNonce - respons bukan nonce (status ${res.status}): ${text.slice(0, 150)}`);
+  }
+  return text.trim();
 }
 
 function buildSiweMessage({ address, nonce, issuedAt }) {
@@ -70,7 +89,12 @@ async function connectWallet(privateKey) {
 
   const res = await fetch(`https://${DOMAIN}/api/auth/verify`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: {
+      ...COMMON_HEADERS,
+      'Content-Type': 'application/json',
+      Origin: `https://${DOMAIN}`,
+      Referer: `https://${DOMAIN}/dashboard`,
+    },
     body: JSON.stringify({
       message: {
         domain: DOMAIN,
@@ -86,7 +110,7 @@ async function connectWallet(privateKey) {
     }),
   });
 
-  const data = await res.json();
+  const data = await safeJson(res, 'connectWallet');
   if (!data.ok) throw new Error(`gagal verify: ${JSON.stringify(data)}`);
 
   const setCookie = res.headers.get('set-cookie') || '';
