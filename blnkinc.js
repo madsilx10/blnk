@@ -41,9 +41,12 @@ function extractCookieValue(setCookieHeader, name) {
 }
 
 const COMMON_HEADERS = {
-  'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36',
-  Accept: 'application/json, text/plain, */*',
-  'Accept-Language': 'en-US,en;q=0.9',
+  'User-Agent': 'Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Mobile Safari/537.36',
+  Accept: '*/*',
+  'Accept-Language': 'id-ID,id;q=0.9,en-US;q=0.8,en;q=0.7',
+  'Sec-Ch-Ua': '"Chromium";v="137", "Not/A)Brand";v="24"',
+  'Sec-Ch-Ua-Mobile': '?1',
+  'Sec-Ch-Ua-Platform': '"Android"',
 };
 
 async function safeJson(res, label) {
@@ -55,14 +58,52 @@ async function safeJson(res, label) {
   }
 }
 
-async function getNonce() {
+function mergeCookies(existing, setCookieArr) {
+  const jar = { ...existing };
+  for (const c of setCookieArr) {
+    const [pair] = c.split(';');
+    const eqIdx = pair.indexOf('=');
+    if (eqIdx === -1) continue;
+    jar[pair.slice(0, eqIdx).trim()] = pair.slice(eqIdx + 1).trim();
+  }
+  return jar;
+}
+
+function getSetCookies(res) {
+  return typeof res.headers.getSetCookie === 'function'
+    ? res.headers.getSetCookie()
+    : (res.headers.get('set-cookie') || '').split(/,(?=[^;]+?=)/).filter(Boolean);
+}
+
+function cookieHeaderStr(jar) {
+  return Object.entries(jar).map(([k, v]) => `${k}=${v}`).join('; ');
+}
+
+// Load halaman dulu buat dapetin cookie awal (bypass bot-check)
+async function initSession() {
+  const res = await fetch(`https://${DOMAIN}/dashboard`, {
+    headers: { ...COMMON_HEADERS, 'Sec-Fetch-Dest': 'document', 'Sec-Fetch-Mode': 'navigate', 'Sec-Fetch-Site': 'none' },
+  });
+  await res.text();
+  return mergeCookies({}, getSetCookies(res));
+}
+
+async function getNonce(cookieJar) {
   const res = await fetch(`https://${DOMAIN}/api/auth/nonce`, {
-    headers: { ...COMMON_HEADERS, Referer: `https://${DOMAIN}/dashboard` },
+    headers: {
+      ...COMMON_HEADERS,
+      Referer: `https://${DOMAIN}/dashboard`,
+      'Sec-Fetch-Dest': 'empty',
+      'Sec-Fetch-Mode': 'cors',
+      'Sec-Fetch-Site': 'same-origin',
+      Cookie: cookieHeaderStr(cookieJar),
+    },
   });
   const text = await res.text();
   if (!text || text.trim().startsWith('<')) {
     throw new Error(`getNonce - respons bukan nonce (status ${res.status}): ${text.slice(0, 150)}`);
   }
+  Object.assign(cookieJar, mergeCookies({}, getSetCookies(res)));
   return text.trim();
 }
 
@@ -81,7 +122,8 @@ Issued At: ${issuedAt}`;
 
 async function connectWallet(privateKey) {
   const wallet = new ethers.Wallet(privateKey);
-  const nonce = await getNonce();
+  const cookieJar = await initSession();
+  const nonce = await getNonce(cookieJar);
   const issuedAt = new Date().toISOString();
 
   const messageToSign = buildSiweMessage({ address: wallet.address, nonce, issuedAt });
@@ -94,6 +136,10 @@ async function connectWallet(privateKey) {
       'Content-Type': 'application/json',
       Origin: `https://${DOMAIN}`,
       Referer: `https://${DOMAIN}/dashboard`,
+      'Sec-Fetch-Dest': 'empty',
+      'Sec-Fetch-Mode': 'cors',
+      'Sec-Fetch-Site': 'same-origin',
+      Cookie: cookieHeaderStr(cookieJar),
     },
     body: JSON.stringify({
       message: {
