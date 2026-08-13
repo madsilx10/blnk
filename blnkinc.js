@@ -8,6 +8,7 @@ const STATEMENT = 'Sign in with Ethereum to BLNK';
 const CHAIN_ID = 1;
 
 const PRIVATEKEY_FILE = 'privatekey.txt'; // satu private key per baris
+const USN_FILE = 'usn1.txt'; // satu handle X (dgn @ atau tanpa) per baris
 const MIN_DELAY = 15000;
 const MAX_DELAY = 30000;
 
@@ -32,12 +33,6 @@ function readLines(path) {
     process.exit(1);
   }
   return fs.readFileSync(path, 'utf-8').split('\n').map((l) => l.trim()).filter(Boolean);
-}
-
-function extractCookieValue(setCookieHeader, name) {
-  if (!setCookieHeader) return null;
-  const match = setCookieHeader.match(new RegExp(`${name}=([^;]+)`));
-  return match ? match[1] : null;
 }
 
 const COMMON_HEADERS = {
@@ -120,7 +115,28 @@ Nonce: ${nonce}
 Issued At: ${issuedAt}`;
 }
 
-async function connectWallet(privateKey) {
+async function submitTwitterHandle(handle, cookieJar) {
+  const res = await fetch(`https://${DOMAIN}/api/tasks/twitter`, {
+    method: 'POST',
+    headers: {
+      ...COMMON_HEADERS,
+      'Content-Type': 'application/json',
+      Origin: `https://${DOMAIN}`,
+      Referer: `https://${DOMAIN}/dashboard`,
+      'Sec-Fetch-Dest': 'empty',
+      'Sec-Fetch-Mode': 'cors',
+      'Sec-Fetch-Site': 'same-origin',
+      Cookie: cookieHeaderStr(cookieJar),
+    },
+    body: JSON.stringify({ handle }),
+  });
+
+  const data = await safeJson(res, 'submitTwitterHandle');
+  if (!data.ok) throw new Error(`gagal submit twitter: ${JSON.stringify(data)}`);
+  return data;
+}
+
+async function connectWallet(privateKey, handle) {
   const wallet = new ethers.Wallet(privateKey);
   const cookieJar = await initSession();
   const nonce = await getNonce(cookieJar);
@@ -159,10 +175,11 @@ async function connectWallet(privateKey) {
   const data = await safeJson(res, 'connectWallet');
   if (!data.ok) throw new Error(`gagal verify: ${JSON.stringify(data)}`);
 
-  const setCookie = res.headers.get('set-cookie') || '';
-  const sessionCookie = extractCookieValue(setCookie, 'blnk_siwe');
+  Object.assign(cookieJar, mergeCookies({}, getSetCookies(res)));
 
-  return { address: wallet.address, sessionCookie };
+  const taskResult = await submitTwitterHandle(handle, cookieJar);
+
+  return { address: wallet.address, coins: taskResult.coins };
 }
 
 function ask(question) {
@@ -193,19 +210,25 @@ async function selectAccounts(total) {
 
 async function main() {
   const privateKeys = readLines(PRIVATEKEY_FILE);
+  const handles = readLines(USN_FILE);
+
   if (privateKeys.length === 0) { console.error('Tidak ada private key.'); return; }
+  if (privateKeys.length !== handles.length) {
+    console.error(`Jumlah baris ${PRIVATEKEY_FILE} (${privateKeys.length}) dan ${USN_FILE} (${handles.length}) tidak sama.`);
+    return;
+  }
 
   const indices = await selectAccounts(privateKeys.length);
-  const selected = indices.map((idx) => ({ privateKey: privateKeys[idx], originalNum: idx + 1 }));
+  const selected = indices.map((idx) => ({ privateKey: privateKeys[idx], handle: handles[idx], originalNum: idx + 1 }));
 
   for (let i = 0; i < selected.length; i++) {
-    const { privateKey, originalNum } = selected[i];
+    const { privateKey, handle, originalNum } = selected[i];
 
-    process.stdout.write(`[PROSES] akun ${originalNum} - connect wallet ... `);
+    process.stdout.write(`[PROSES] akun ${originalNum} - connect wallet + submit ${handle} ... `);
 
     try {
-      const { address } = await connectWallet(privateKey);
-      console.log(`OK (${address})`);
+      const { address, coins } = await connectWallet(privateKey, handle);
+      console.log(`OK (${address}, +${coins} coins)`);
     } catch (err) {
       console.log(`ERROR - ${err.message}`);
     }
